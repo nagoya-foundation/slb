@@ -1,4 +1,11 @@
-#!/bin/sh
+#!/bin/bash
+
+cleanup() {
+	echo "Cleaning up servers"
+	rm "$servers"
+	echo "Cleaning up fifos"
+	rm "$fifodir/*"
+}
 
 usage() {
 	echo "slb v0.1.0: A load balancer written in shell script for development purposes."
@@ -21,8 +28,8 @@ usage() {
 	echo "  smail		Send an email"
 	echo ""
 	#echo "Report bugs to: bleemayer@gmail.com"
-	#echo "Home page: <https://www.github.com/blmayer/smail/>"
-	#echo "General help: <https://www.github.com/blmayer/smail/wiki>"
+	#echo "Home page: <https://www.github.com/nagoya-foundation/slb/>"
+	#echo "General help: <https://www.github.com/nagoya-foundation/slb/wiki>"
 }
 
 show_version() {
@@ -69,19 +76,36 @@ read_opts() {
 				;;
 			*)
 				echo "Adding $1"
-				echo "$1" >> .servers &
+				echo "$1" >> "$servers" &
 				;;
 		esac
 		shift
 	done
 }
 
+use_server() {
+	echo "Using $1:$2"
+	mkfifo -m 0600 "$fifodir/$1-$2"
+	nc -l "$listenport" < "$fifodir/$1-$2" | nc "$1" "$2" > "$fifodir/$1-$2"
+	rm "$fifodir/$1-$2"
+	
+	echo "Done with $1:$2"
+	echo "$1:$2" >> "$servers" &
+	echo "Added $1:$2 back"	
+}
+
+trap "cleanup; exit" EXIT INT HUP
+
 # Defaults
 listenport=4433
 
-# Servers list
-rm .servers
-mkfifo .servers
+cachedir=${XDG_CACHE_HOME:-$HOME/.cache}
+mkdir -p "$cachedir/slb"
+servers="$cachedir/slb/servers"
+mkfifo "$servers"
+
+fifodir="$cachedir/slb/fifo"
+mkdir -p "$fifodir"
 
 read_opts "$@"
 
@@ -90,15 +114,9 @@ read_opts "$@"
 echo "slb listenning on port $listenport"
 while :
 do
-	read server port < .servers
-	echo "Using server $server:$port"
-	mkfifo "$server:$port"
-	$(nc -d "$server" "$port" < "$server:$port" > "$server:$port") &
-	echo "Connected to $server"
+	IFS=':' read -r server port < "$servers"
+	echo "Selected $server:$port"
 
-	nc -d -l "$listenport" < "$server:$port" > "$server:$port"
-	echo "$server" > .servers
-	echo "Added $server back"
-	rm "$server:$port"
+	(use_server "$server" "$port")
 done
 
